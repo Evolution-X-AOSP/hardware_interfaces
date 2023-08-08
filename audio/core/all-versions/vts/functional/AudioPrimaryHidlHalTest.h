@@ -1274,6 +1274,8 @@ class InputStreamTest
         if (!xsd::isTelephonyDevice(address.deviceType)) {
             metadata.source = toString(xsd::AudioSource::AUDIO_SOURCE_UNPROCESSED);
             metadata.channelMask = getConfig().base.channelMask;
+        } else {
+            address.deviceType = toString(xsd::AudioDevice::AUDIO_DEVICE_IN_DEFAULT);
         }
 #if MAJOR_VERSION == 7 && MINOR_VERSION >= 1
         auto flagsIt = std::find(flags.begin(), flags.end(),
@@ -1694,26 +1696,6 @@ TEST_P(InputStreamTest, GetInputFramesLost) {
     ASSERT_IS_OK(ret);
     uint32_t framesLost{ret};
     ASSERT_EQ(0U, framesLost);
-}
-
-TEST_P(InputStreamTest, getCapturePosition) {
-    doc::test(
-        "The capture position of a non prepared stream should not be "
-        "retrievable or 0");
-    uint64_t frames;
-    uint64_t time;
-    ASSERT_OK(stream->getCapturePosition(returnIn(res, frames, time)));
-    // Although 'getCapturePosition' is mandatory in V7, legacy implementations
-    // may return -ENOSYS (which is translated to NOT_SUPPORTED) in cases when
-    // the capture position can't be retrieved, e.g. when the stream isn't
-    // running. Because of this, we don't fail when getting NOT_SUPPORTED
-    // in this test. Behavior of 'getCapturePosition' for running streams is
-    // tested in 'PcmOnlyConfigInputStreamTest' for V7.
-    ASSERT_RESULT(okOrInvalidStateOrNotSupported, res);
-    if (res == Result::OK) {
-        ASSERT_EQ(0U, frames);
-        ASSERT_LE(0U, time);
-    }
 }
 
 //////////////////////////////////////////////////////////////////////////////

@@ -167,7 +167,15 @@ const std::vector<ConfigDeclaration> kVehicleProperties = {
                          .maxSampleRate = 10.0f,
                  },
          .initialValue = {.floatValues = {0.0f}}},
-
+        {.config =
+                 {
+                         .prop = toInt(VehicleProperty::PERF_VEHICLE_SPEED_DISPLAY),
+                         .access = VehiclePropertyAccess::READ,
+                         .changeMode = VehiclePropertyChangeMode::CONTINUOUS,
+                         .minSampleRate = 1.0f,
+                         .maxSampleRate = 10.0f,
+                 },
+         .initialValue = {.floatValues = {0.0f}}},
         {.config =
                  {
                          .prop = toInt(VehicleProperty::VEHICLE_SPEED_DISPLAY_UNITS),
@@ -177,7 +185,7 @@ const std::vector<ConfigDeclaration> kVehicleProperties = {
                                          toInt(VehicleUnit::MILES_PER_HOUR),
                                          toInt(VehicleUnit::KILOMETERS_PER_HOUR)},
                  },
-         .initialValue = {.int32Values = {toInt(VehicleUnit::KILOMETERS_PER_HOUR)}}},
+         .initialValue = {.int32Values = {toInt(VehicleUnit::MILES_PER_HOUR)}}},
 
         {.config =
                  {
@@ -189,6 +197,40 @@ const std::vector<ConfigDeclaration> kVehicleProperties = {
                                          toInt(VehicleUnit::KILOWATT_HOUR)},
                  },
          .initialValue = {.int32Values = {toInt(VehicleUnit::KILOWATT_HOUR)}}},
+
+        {.config = {.prop = toInt(VehicleProperty::SEAT_MEMORY_SELECT),
+                    .access = VehiclePropertyAccess::WRITE,
+                    .changeMode = VehiclePropertyChangeMode::ON_CHANGE,
+                    .areaConfigs = {VehicleAreaConfig{.areaId = SEAT_1_LEFT,
+                                                      .minInt32Value = 0,
+                                                      .maxInt32Value = 3},
+                                    VehicleAreaConfig{.areaId = SEAT_1_RIGHT,
+                                                      .minInt32Value = 0,
+                                                      .maxInt32Value = 3},
+                                    VehicleAreaConfig{.areaId = SEAT_2_LEFT,
+                                                      .minInt32Value = 0,
+                                                      .maxInt32Value = 3},
+                                    VehicleAreaConfig{.areaId = SEAT_2_RIGHT,
+                                                      .minInt32Value = 0,
+                                                      .maxInt32Value = 3}}},
+         .initialValue = {.int32Values = {1}}},
+
+        {.config = {.prop = toInt(VehicleProperty::SEAT_MEMORY_SET),
+                    .access = VehiclePropertyAccess::WRITE,
+                    .changeMode = VehiclePropertyChangeMode::ON_CHANGE,
+                    .areaConfigs = {VehicleAreaConfig{.areaId = SEAT_1_LEFT,
+                                                      .minInt32Value = 0,
+                                                      .maxInt32Value = 3},
+                                    VehicleAreaConfig{.areaId = SEAT_1_RIGHT,
+                                                      .minInt32Value = 0,
+                                                      .maxInt32Value = 3},
+                                    VehicleAreaConfig{.areaId = SEAT_2_LEFT,
+                                                      .minInt32Value = 0,
+                                                      .maxInt32Value = 3},
+                                    VehicleAreaConfig{.areaId = SEAT_2_RIGHT,
+                                                      .minInt32Value = 0,
+                                                      .maxInt32Value = 3}}},
+         .initialValue = {.int32Values = {1}}},
 
         {.config = {.prop = toInt(VehicleProperty::SEAT_BELT_BUCKLED),
                     .access = VehiclePropertyAccess::READ_WRITE,
@@ -991,7 +1033,7 @@ const std::vector<ConfigDeclaration> kVehicleProperties = {
                          .changeMode = VehiclePropertyChangeMode::ON_CHANGE,
                          .configArray = {(int)VehicleUnit::LITER, (int)VehicleUnit::US_GALLON},
                  },
-         .initialValue = {.int32Values = {(int)VehicleUnit::LITER}}},
+         .initialValue = {.int32Values = {(int)VehicleUnit::US_GALLON}}},
 
         {.config =
                  {
