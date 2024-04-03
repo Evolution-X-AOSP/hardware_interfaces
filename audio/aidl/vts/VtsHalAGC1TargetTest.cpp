@@ -28,6 +28,7 @@ using aidl::android::hardware::audio::effect::getEffectTypeUuidAutomaticGainCont
 using aidl::android::hardware::audio::effect::IEffect;
 using aidl::android::hardware::audio::effect::IFactory;
 using aidl::android::hardware::audio::effect::Parameter;
+using android::hardware::audio::common::testing::detail::TestExecutionTracer;
 
 enum ParamName {
     PARAM_INSTANCE_NAME,
@@ -177,11 +178,9 @@ INSTANTIATE_TEST_SUITE_P(
                     std::to_string(std::get<PARAM_MAX_COMPRESSION_GAIN>(info.param));
             std::string enableLimiter = std::to_string(std::get<PARAM_ENABLE_LIMITER>(info.param));
 
-            std::string name = "Implementor_" + descriptor.common.implementor + "_name_" +
-                               descriptor.common.name + "_UUID_" +
-                               descriptor.common.id.uuid.toString() + "_target_peak_level_" +
-                               targetPeakLevel + "_max_compression_gain_" + maxCompressionGain +
-                               "_enable_limiter_" + enableLimiter;
+            std::string name = getPrefix(descriptor) + "_target_peak_level_" + targetPeakLevel +
+                               "_max_compression_gain_" + maxCompressionGain + "_enable_limiter_" +
+                               enableLimiter;
             std::replace_if(
                     name.begin(), name.end(), [](const char c) { return !std::isalnum(c); }, '_');
             return name;
@@ -191,6 +190,7 @@ GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(AGC1ParamTest);
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
+    ::testing::UnitTest::GetInstance()->listeners().Append(new TestExecutionTracer());
     ABinderProcess_setThreadPoolMaxThreadCount(1);
     ABinderProcess_startThreadPool();
     return RUN_ALL_TESTS();

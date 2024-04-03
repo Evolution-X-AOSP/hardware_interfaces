@@ -31,6 +31,7 @@ using aidl::android::hardware::audio::effect::IEffect;
 using aidl::android::hardware::audio::effect::IFactory;
 using aidl::android::hardware::audio::effect::Parameter;
 using aidl::android::hardware::audio::effect::Visualizer;
+using android::hardware::audio::common::testing::detail::TestExecutionTracer;
 
 /**
  * Here we focus on specific parameter checking, general IEffect interfaces testing performed in
@@ -195,9 +196,7 @@ INSTANTIATE_TEST_SUITE_P(
                     std::get<PARAM_MEASUREMENT_MODE>(info.param));
             std::string latency = std::to_string(std::get<PARAM_LATENCY>(info.param));
 
-            std::string name = "Implementor_" + descriptor.common.implementor + "_name_" +
-                               descriptor.common.name + "_UUID_" +
-                               descriptor.common.id.uuid.toString() + "_captureSize" + captureSize +
+            std::string name = getPrefix(descriptor) + "_captureSize" + captureSize +
                                "_scalingMode" + scalingMode + "_measurementMode" + measurementMode +
                                "_latency" + latency;
             std::replace_if(
@@ -209,6 +208,7 @@ GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(VisualizerParamTest);
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
+    ::testing::UnitTest::GetInstance()->listeners().Append(new TestExecutionTracer());
     ABinderProcess_setThreadPoolMaxThreadCount(1);
     ABinderProcess_startThreadPool();
     return RUN_ALL_TESTS();

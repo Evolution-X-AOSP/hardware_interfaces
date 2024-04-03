@@ -38,6 +38,8 @@ using ::aidl::android::hardware::automotive::vehicle::IVehicleCallback;
 using ::aidl::android::hardware::automotive::vehicle::SetValueResult;
 using ::aidl::android::hardware::automotive::vehicle::SetValueResults;
 using ::aidl::android::hardware::automotive::vehicle::StatusCode;
+using ::aidl::android::hardware::automotive::vehicle::VehiclePropError;
+using ::aidl::android::hardware::automotive::vehicle::VehiclePropErrors;
 using ::aidl::android::hardware::automotive::vehicle::VehiclePropValue;
 using ::aidl::android::hardware::automotive::vehicle::VehiclePropValues;
 using ::android::base::Result;
@@ -248,36 +250,6 @@ void GetSetValuesClient<ResultType, ResultsType>::sendResultsSeparately(
 template class GetSetValuesClient<GetValueResult, GetValueResults>;
 template class GetSetValuesClient<SetValueResult, SetValueResults>;
 
-SubscriptionClient::SubscriptionClient(std::shared_ptr<PendingRequestPool> requestPool,
-                                       std::shared_ptr<IVehicleCallback> callback)
-    : ConnectedClient(requestPool, callback) {
-    mTimeoutCallback = std::make_shared<const PendingRequestPool::TimeoutCallbackFunc>(
-            [](std::unordered_set<int64_t> timeoutIds) {
-                for (int64_t id : timeoutIds) {
-                    ALOGW("subscribe: requests with IDs: %" PRId64
-                          " has timed-out, not client informed, "
-                          "possibly one of recurrent requests for this subscription failed",
-                          id);
-                }
-            });
-    auto requestPoolCopy = mRequestPool;
-    const void* clientId = reinterpret_cast<const void*>(this);
-    mResultCallback = std::make_shared<const IVehicleHardware::GetValuesCallback>(
-            [clientId, callback, requestPoolCopy](std::vector<GetValueResult> results) {
-                onGetValueResults(clientId, callback, requestPoolCopy, results);
-            });
-}
-
-std::shared_ptr<const std::function<void(std::vector<GetValueResult>)>>
-SubscriptionClient::getResultCallback() {
-    return mResultCallback;
-}
-
-std::shared_ptr<const PendingRequestPool::TimeoutCallbackFunc>
-SubscriptionClient::getTimeoutCallback() {
-    return mTimeoutCallback;
-}
-
 void SubscriptionClient::sendUpdatedValues(std::shared_ptr<IVehicleCallback> callback,
                                            std::vector<VehiclePropValue>&& updatedValues) {
     if (updatedValues.empty()) {
@@ -300,48 +272,38 @@ void SubscriptionClient::sendUpdatedValues(std::shared_ptr<IVehicleCallback> cal
     if (ScopedAStatus callbackStatus =
                 callback->onPropertyEvent(vehiclePropValues, sharedMemoryFileCount);
         !callbackStatus.isOk()) {
-        ALOGE("subscribe: failed to call UpdateValues callback, client ID: %p, error: %s, "
+        ALOGE("subscribe: failed to call onPropertyEvent callback, client ID: %p, error: %s, "
               "exception: %d, service specific error: %d",
               callback->asBinder().get(), callbackStatus.getMessage(),
               callbackStatus.getExceptionCode(), callbackStatus.getServiceSpecificError());
     }
 }
 
-void SubscriptionClient::onGetValueResults(const void* clientId,
-                                           std::shared_ptr<IVehicleCallback> callback,
-                                           std::shared_ptr<PendingRequestPool> requestPool,
-                                           std::vector<GetValueResult> results) {
-    std::unordered_set<int64_t> requestIds;
-    for (const auto& result : results) {
-        requestIds.insert(result.requestId);
+void SubscriptionClient::sendPropertySetErrors(std::shared_ptr<IVehicleCallback> callback,
+                                               std::vector<VehiclePropError>&& vehiclePropErrors) {
+    if (vehiclePropErrors.empty()) {
+        return;
     }
 
-    auto finishedRequests = requestPool->tryFinishRequests(clientId, requestIds);
-    std::vector<VehiclePropValue> propValues;
-    for (auto& result : results) {
-        int64_t requestId = result.requestId;
-        if (finishedRequests.find(requestId) == finishedRequests.end()) {
-            ALOGE("subscribe[%" PRId64
-                  "]: no pending request for the result from hardware, "
-                  "possibly already time-out",
-                  requestId);
-            continue;
-        }
-        if (result.status != StatusCode::OK) {
-            ALOGE("subscribe[%" PRId64
-                  "]: hardware returns non-ok status for getValues, status: "
-                  "%d",
-                  requestId, toInt(result.status));
-            continue;
-        }
-        if (!result.prop.has_value()) {
-            ALOGE("subscribe[%" PRId64 "]: no prop value in getValues result", requestId);
-            continue;
-        }
-        propValues.push_back(std::move(result.prop.value()));
+    VehiclePropErrors vehiclePropErrorsLargeParcelable;
+    ScopedAStatus status = vectorToStableLargeParcelable(std::move(vehiclePropErrors),
+                                                         &vehiclePropErrorsLargeParcelable);
+    if (!status.isOk()) {
+        int statusCode = status.getServiceSpecificError();
+        ALOGE("subscribe: failed to marshal result into large parcelable, error: "
+              "%s, code: %d",
+              status.getMessage(), statusCode);
+        return;
     }
 
-    sendUpdatedValues(callback, std::move(propValues));
+    if (ScopedAStatus callbackStatus =
+                callback->onPropertySetError(vehiclePropErrorsLargeParcelable);
+        !callbackStatus.isOk()) {
+        ALOGE("subscribe: failed to call onPropertySetError callback, client ID: %p, error: %s, "
+              "exception: %d, service specific error: %d",
+              callback->asBinder().get(), callbackStatus.getMessage(),
+              callbackStatus.getExceptionCode(), callbackStatus.getServiceSpecificError());
+    }
 }
 
 }  // namespace vehicle

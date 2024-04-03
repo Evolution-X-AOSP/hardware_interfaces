@@ -30,6 +30,7 @@
 #include <android/binder_auto_utils.h>
 #include <fmq/AidlMessageQueue.h>
 #include <gtest/gtest.h>
+#include <system/audio_aidl_utils.h>
 #include <system/audio_effects/aidl_effects_utils.h>
 #include <system/audio_effects/effect_uuid.h>
 
@@ -51,6 +52,7 @@ using aidl::android::media::audio::common::AudioFormatDescription;
 using aidl::android::media::audio::common::AudioFormatType;
 using aidl::android::media::audio::common::AudioUuid;
 using aidl::android::media::audio::common::PcmType;
+using ::android::audio::utils::toString;
 using ::android::hardware::EventFlag;
 
 const AudioFormatDescription kDefaultFormatDescription = {
@@ -63,6 +65,12 @@ typedef ::android::AidlMessageQueue<float,
                                     ::aidl::android::hardware::common::fmq::SynchronizedReadWrite>
         DataMQ;
 
+static inline std::string getPrefix(Descriptor& descriptor) {
+    std::string prefix = "Implementor_" + descriptor.common.implementor + "_name_" +
+                         descriptor.common.name + "_UUID_" + toString(descriptor.common.id.uuid);
+    return prefix;
+}
+
 class EffectHelper {
   public:
     static void create(std::shared_ptr<IFactory> factory, std::shared_ptr<IEffect>& effect,
@@ -71,7 +79,7 @@ class EffectHelper {
         auto& id = desc.common.id;
         ASSERT_STATUS(status, factory->createEffect(id.uuid, &effect));
         if (status == EX_NONE) {
-            ASSERT_NE(effect, nullptr) << id.uuid.toString();
+            ASSERT_NE(effect, nullptr) << toString(id.uuid);
         }
     }
 
@@ -242,11 +250,11 @@ class EffectHelper {
                    maxLimit = std::numeric_limits<S>::max();
         if (s.size()) {
             const auto min = *s.begin(), max = *s.rbegin();
-            s.insert(min + (max - min) / 2);
-            if (min != minLimit) {
+            s.insert((min & max) + ((min ^ max) >> 1));
+            if (min > minLimit + 1) {
                 s.insert(min - 1);
             }
-            if (max != maxLimit) {
+            if (max < maxLimit - 1) {
                 s.insert(max + 1);
             }
         }
@@ -274,5 +282,33 @@ class EffectHelper {
             }
         }
         return functor(result);
+    }
+
+    static void processAndWriteToOutput(std::vector<float>& inputBuffer,
+                                        std::vector<float>& outputBuffer,
+                                        const std::shared_ptr<IEffect>& mEffect,
+                                        IEffect::OpenEffectReturn* mOpenEffectReturn) {
+        // Initialize AidlMessagequeues
+        auto statusMQ = std::make_unique<EffectHelper::StatusMQ>(mOpenEffectReturn->statusMQ);
+        ASSERT_TRUE(statusMQ->isValid());
+        auto inputMQ = std::make_unique<EffectHelper::DataMQ>(mOpenEffectReturn->inputDataMQ);
+        ASSERT_TRUE(inputMQ->isValid());
+        auto outputMQ = std::make_unique<EffectHelper::DataMQ>(mOpenEffectReturn->outputDataMQ);
+        ASSERT_TRUE(outputMQ->isValid());
+
+        // Enabling the process
+        ASSERT_NO_FATAL_FAILURE(command(mEffect, CommandId::START));
+        ASSERT_NO_FATAL_FAILURE(expectState(mEffect, State::PROCESSING));
+
+        // Write from buffer to message queues and calling process
+        EXPECT_NO_FATAL_FAILURE(EffectHelper::writeToFmq(statusMQ, inputMQ, inputBuffer));
+
+        // Read the updated message queues into buffer
+        EXPECT_NO_FATAL_FAILURE(EffectHelper::readFromFmq(statusMQ, 1, outputMQ,
+                                                          outputBuffer.size(), outputBuffer));
+
+        // Disable the process
+        ASSERT_NO_FATAL_FAILURE(command(mEffect, CommandId::RESET));
+        ASSERT_NO_FATAL_FAILURE(expectState(mEffect, State::IDLE));
     }
 };

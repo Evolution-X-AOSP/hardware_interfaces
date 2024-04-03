@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <iomanip>
 #include <iterator>
 #include <memory>
 #include <set>
@@ -113,6 +114,36 @@ ErrMsgOr<std::tuple<bytevec, bytevec>> getAffineCoordinates(const bytevec& pubKe
         return "Error in converting absolute value of y coordinate to big-endian";
     }
     return std::make_tuple(std::move(pubX), std::move(pubY));
+}
+
+ErrMsgOr<bytevec> getRawPublicKey(const EVP_PKEY_Ptr& pubKey) {
+    if (pubKey.get() == nullptr) {
+        return "pkey is null.";
+    }
+    int keyType = EVP_PKEY_base_id(pubKey.get());
+    switch (keyType) {
+        case EVP_PKEY_EC: {
+            auto ecKey = EC_KEY_Ptr(EVP_PKEY_get1_EC_KEY(pubKey.get()));
+            if (ecKey.get() == nullptr) {
+                return "Failed to get ec key";
+            }
+            return ecKeyGetPublicKey(ecKey.get());
+        }
+        case EVP_PKEY_ED25519: {
+            bytevec rawPubKey;
+            size_t rawKeySize = 0;
+            if (!EVP_PKEY_get_raw_public_key(pubKey.get(), NULL, &rawKeySize)) {
+                return "Failed to get raw public key.";
+            }
+            rawPubKey.resize(rawKeySize);
+            if (!EVP_PKEY_get_raw_public_key(pubKey.get(), rawPubKey.data(), &rawKeySize)) {
+                return "Failed to get raw public key.";
+            }
+            return rawPubKey;
+        }
+        default:
+            return "Unknown key type.";
+    }
 }
 
 ErrMsgOr<std::tuple<bytevec, bytevec>> generateEc256KeyPair() {
@@ -306,9 +337,9 @@ ErrMsgOr<std::vector<BccEntryData>> validateBcc(const cppbor::Array* bcc,
     return result;
 }
 
-JsonOutput jsonEncodeCsrWithBuild(const std::string instance_name, const cppbor::Array& csr) {
+JsonOutput jsonEncodeCsrWithBuild(const std::string& instance_name, const cppbor::Array& csr,
+                                  const std::string& serialno_prop) {
     const std::string kFingerprintProp = "ro.build.fingerprint";
-    const std::string kSerialNoProp = "ro.serialno";
 
     if (!::android::base::WaitForPropertyCreation(kFingerprintProp)) {
         return JsonOutput::Error("Unable to read build fingerprint");
@@ -333,7 +364,7 @@ JsonOutput jsonEncodeCsrWithBuild(const std::string instance_name, const cppbor:
     Json::Value json(Json::objectValue);
     json["name"] = instance_name;
     json["build_fingerprint"] = ::android::base::GetProperty(kFingerprintProp, /*default=*/"");
-    json["serialno"] = ::android::base::GetProperty(kSerialNoProp, /*default=*/"");
+    json["serialno"] = ::android::base::GetProperty(serialno_prop, /*default=*/"");
     json["csr"] = base64.data();  // Boring writes a NUL-terminated c-string
 
     Json::StreamWriterBuilder factory;
@@ -388,6 +419,36 @@ std::string checkMapEntry(bool isFactory, const cppbor::Map& devInfo, cppbor::Ma
         }
     }
     return entryName + " has an invalid value.\n";
+}
+
+std::string checkMapPatchLevelEntry(bool isFactory, const cppbor::Map& devInfo,
+                                    const std::string& entryName) {
+    std::string error = checkMapEntry(isFactory, devInfo, cppbor::UINT, entryName);
+    if (!error.empty()) {
+        return error;
+    }
+
+    if (isFactory) {
+        return "";
+    }
+
+    const std::unique_ptr<cppbor::Item>& val = devInfo.get(entryName);
+    std::string dateString = std::to_string(val->asUint()->unsignedValue());
+    if (dateString.size() == 6) {
+        dateString += "01";
+    }
+    if (dateString.size() != 8) {
+        return entryName + " should in the format YYYYMMDD or YYYYMM\n";
+    }
+
+    std::tm t;
+    std::istringstream ss(dateString);
+    ss >> std::get_time(&t, "%Y%m%d");
+    if (!ss) {
+        return entryName + " should in the format YYYYMMDD or YYYYMM\n";
+    }
+
+    return "";
 }
 
 bool isTeeDeviceInfo(const cppbor::Map& devInfo) {
@@ -459,6 +520,15 @@ ErrMsgOr<std::unique_ptr<cppbor::Map>> parseAndValidateDeviceInfo(
                    std::to_string(info.versionNumber) + ").";
         }
     }
+    // Bypasses the device info validation since the device info in AVF is currently
+    // empty. Check b/299256925 for more information.
+    //
+    // TODO(b/300911665): This check is temporary and will be replaced once the markers
+    // on the DICE chain become available. We need to determine if the CSR is from the
+    // RKP VM using the markers on the DICE chain.
+    if (info.uniqueId == "AVF Remote Provisioning 1") {
+        return std::move(parsed);
+    }
 
     std::string error;
     std::string tmp;
@@ -490,6 +560,10 @@ ErrMsgOr<std::unique_ptr<cppbor::Map>> parseAndValidateDeviceInfo(
                     error += "Err: Unrecognized key entry: <" + key->asTstr()->value() + ">,\n";
                 }
             }
+            // Checks that only apply to v3.
+            error += checkMapPatchLevelEntry(isFactory, *parsed, "system_patch_level");
+            error += checkMapPatchLevelEntry(isFactory, *parsed, "boot_patch_level");
+            error += checkMapPatchLevelEntry(isFactory, *parsed, "vendor_patch_level");
             FALLTHROUGH_INTENDED;
         case 2:
             for (const auto& entry : kAttestationIdEntrySet) {
@@ -706,11 +780,10 @@ std::string getX509SubjectName(const X509_Ptr& cert) {
 
 // Validates the certificate chain and returns the leaf public key.
 ErrMsgOr<bytevec> validateCertChain(const cppbor::Array& chain) {
-    uint8_t rawPubKey[64];
-    size_t rawPubKeySize = sizeof(rawPubKey);
+    bytevec rawPubKey;
     for (size_t i = 0; i < chain.size(); ++i) {
         // Root must be self-signed.
-        size_t signingCertIndex = (i > 1) ? i - 1 : i;
+        size_t signingCertIndex = (i > 0) ? i - 1 : i;
         auto& keyCertItem = chain[i];
         auto& signingCertItem = chain[signingCertIndex];
         if (!keyCertItem || !keyCertItem->asBstr()) {
@@ -724,7 +797,7 @@ ErrMsgOr<bytevec> validateCertChain(const cppbor::Array& chain) {
         if (!keyCert) {
             return keyCert.message();
         }
-        auto signingCert = parseX509Cert(keyCertItem->asBstr()->value());
+        auto signingCert = parseX509Cert(signingCertItem->asBstr()->value());
         if (!signingCert) {
             return signingCert.message();
         }
@@ -749,17 +822,16 @@ ErrMsgOr<bytevec> validateCertChain(const cppbor::Array& chain) {
             return "Certificate " + std::to_string(i) + " has wrong issuer. Signer subject is " +
                    signerSubj + " Issuer subject is " + certIssuer;
         }
-
-        rawPubKeySize = sizeof(rawPubKey);
-        if (!EVP_PKEY_get_raw_public_key(pubKey.get(), rawPubKey, &rawPubKeySize)) {
-            return "Failed to get raw public key.";
+        if (i == chain.size() - 1) {
+            auto key = getRawPublicKey(pubKey);
+            if (!key) key.moveMessage();
+            rawPubKey = key.moveValue();
         }
     }
-
-    return bytevec(rawPubKey, rawPubKey + rawPubKeySize);
+    return rawPubKey;
 }
 
-std::string validateUdsCerts(const cppbor::Map& udsCerts, const bytevec& udsPub) {
+std::string validateUdsCerts(const cppbor::Map& udsCerts, const bytevec& udsCoseKeyBytes) {
     for (const auto& [signerName, udsCertChain] : udsCerts) {
         if (!signerName || !signerName->asTstr()) {
             return "Signer Name must be a Tstr.";
@@ -775,8 +847,31 @@ std::string validateUdsCerts(const cppbor::Map& udsCerts, const bytevec& udsPub)
         if (!leafPubKey) {
             return leafPubKey.message();
         }
+        auto coseKey = CoseKey::parse(udsCoseKeyBytes);
+        if (!coseKey) return coseKey.moveMessage();
+
+        auto curve = coseKey->getIntValue(CoseKey::CURVE);
+        if (!curve) {
+            return "CoseKey must contain curve.";
+        }
+        bytevec udsPub;
+        if (curve == CoseKeyCurve::P256 || curve == CoseKeyCurve::P384) {
+            auto pubKey = coseKey->getEcPublicKey();
+            if (!pubKey) return pubKey.moveMessage();
+            // convert public key to uncompressed form by prepending 0x04 at begin.
+            pubKey->insert(pubKey->begin(), 0x04);
+            udsPub = pubKey.moveValue();
+        } else if (curve == CoseKeyCurve::ED25519) {
+            auto& pubkey = coseKey->getMap().get(cppcose::CoseKey::PUBKEY_X);
+            if (!pubkey || !pubkey->asBstr()) {
+                return "Invalid public key.";
+            }
+            udsPub = pubkey->asBstr()->value();
+        } else {
+            return "Unknown curve.";
+        }
         if (*leafPubKey != udsPub) {
-            return "Leaf public key in UDS certificat chain doesn't match UDS public key.";
+            return "Leaf public key in UDS certificate chain doesn't match UDS public key.";
         }
     }
     return "";
@@ -876,6 +971,20 @@ ErrMsgOr<bytevec> parseAndValidateAuthenticatedRequestSignedPayload(
     return signedRequest->value();
 }
 
+ErrMsgOr<hwtrust::DiceChain::Kind> getDiceChainKind() {
+    int vendor_api_level = ::android::base::GetIntProperty("ro.vendor.api_level", -1);
+    switch (vendor_api_level) {
+        case __ANDROID_API_T__:
+            return hwtrust::DiceChain::Kind::kVsr13;
+        case __ANDROID_API_U__:
+            return hwtrust::DiceChain::Kind::kVsr14;
+        case 202404: /* TODO(b/315056516) Use a version macro for vendor API 24Q2 */
+            return hwtrust::DiceChain::Kind::kVsr15;
+        default:
+            return "Unsupported vendor API level: " + std::to_string(vendor_api_level);
+    }
+}
+
 ErrMsgOr<bytevec> parseAndValidateAuthenticatedRequest(const std::vector<uint8_t>& request,
                                                        const std::vector<uint8_t>& challenge) {
     auto [parsedRequest, _, csrErrMsg] = cppbor::parse(request);
@@ -910,7 +1019,12 @@ ErrMsgOr<bytevec> parseAndValidateAuthenticatedRequest(const std::vector<uint8_t
     }
 
     // DICE chain is [ pubkey, + DiceChainEntry ].
-    auto diceContents = validateBcc(diceCertChain, hwtrust::DiceChain::Kind::kVsr14);
+    auto diceChainKind = getDiceChainKind();
+    if (!diceChainKind) {
+        return diceChainKind.message();
+    }
+
+    auto diceContents = validateBcc(diceCertChain, *diceChainKind);
     if (!diceContents) {
         return diceContents.message() + "\n" + prettyPrint(diceCertChain);
     }

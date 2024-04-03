@@ -33,6 +33,7 @@ using aidl::android::hardware::audio::effect::HapticGenerator;
 using aidl::android::hardware::audio::effect::IEffect;
 using aidl::android::hardware::audio::effect::IFactory;
 using aidl::android::hardware::audio::effect::Parameter;
+using android::hardware::audio::common::testing::detail::TestExecutionTracer;
 
 /**
  * Here we focus on specific parameter checking, general IEffect interfaces testing performed in
@@ -195,12 +196,10 @@ INSTANTIATE_TEST_SUITE_P(
                     std::to_string(std::get<PARAM_VIBRATION_INFORMATION_Q_FACTOR>(info.param));
             std::string maxAmplitude =
                     std::to_string(std::get<PARAM_VIBRATION_INFORMATION_MAX_AMPLITUDE>(info.param));
-            std::string name = "Implementor_" + descriptor.common.implementor + "_name_" +
-                               descriptor.common.name + "_UUID_" +
-                               descriptor.common.id.uuid.toString() + "_hapticScaleId" +
-                               hapticScaleID + "_hapticScaleVibScale" + hapticScaleVibScale +
-                               "_resonantFrequency" + resonantFrequency + "_qFactor" + qFactor +
-                               "_maxAmplitude" + maxAmplitude;
+            std::string name = getPrefix(descriptor) + "_hapticScaleId" + hapticScaleID +
+                               "_hapticScaleVibScale" + hapticScaleVibScale + "_resonantFrequency" +
+                               resonantFrequency + "_qFactor" + qFactor + "_maxAmplitude" +
+                               maxAmplitude;
             std::replace_if(
                     name.begin(), name.end(), [](const char c) { return !std::isalnum(c); }, '_');
             return name;
@@ -210,7 +209,7 @@ INSTANTIATE_TEST_SUITE_P(
         HapticGeneratorInvalidTest, HapticGeneratorParamTest,
         ::testing::Combine(testing::ValuesIn(EffectFactoryHelper::getAllEffectDescriptors(
                                    IFactory::descriptor, getEffectTypeUuidHapticGenerator())),
-                           testing::Values(MIN_ID - 1),
+                           testing::Values(MIN_ID),
                            testing::Values(HapticGenerator::VibratorScale::NONE),
                            testing::Values(MIN_FLOAT), testing::Values(MIN_FLOAT),
                            testing::Values(MIN_FLOAT)),
@@ -433,6 +432,7 @@ GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(HapticGeneratorScalesTest);
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
+    ::testing::UnitTest::GetInstance()->listeners().Append(new TestExecutionTracer());
     ABinderProcess_setThreadPoolMaxThreadCount(1);
     ABinderProcess_startThreadPool();
     return RUN_ALL_TESTS();

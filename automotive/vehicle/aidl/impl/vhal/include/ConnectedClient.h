@@ -99,35 +99,23 @@ class GetSetValuesClient final : public ConnectedClient {
     std::shared_ptr<const std::function<void(std::vector<ResultType>)>> mResultCallback;
 };
 
-// A class to represent a client that calls {@code IVehicle.subscribe}.
-class SubscriptionClient final : public ConnectedClient {
+class SubscriptionClient {
   public:
-    SubscriptionClient(std::shared_ptr<PendingRequestPool> requestPool, CallbackType callback);
+    using CallbackType =
+            std::shared_ptr<aidl::android::hardware::automotive::vehicle::IVehicleCallback>;
 
-    // Gets the callback to be called when the request for this client has finished.
-    std::shared_ptr<const IVehicleHardware::GetValuesCallback> getResultCallback();
-
-    // Marshals the updated values into largeParcelable and sents it through {@code onPropertyEvent}
+    // Marshals the updated values into largeParcelable and sends it through {@code onPropertyEvent}
     // callback.
     static void sendUpdatedValues(
             CallbackType callback,
             std::vector<aidl::android::hardware::automotive::vehicle::VehiclePropValue>&&
                     updatedValues);
-
-  protected:
-    // Gets the callback to be called when the request for this client has timeout.
-    std::shared_ptr<const PendingRequestPool::TimeoutCallbackFunc> getTimeoutCallback() override;
-
-  private:
-    // The following members are only initialized during construction.
-    std::shared_ptr<const PendingRequestPool::TimeoutCallbackFunc> mTimeoutCallback;
-    std::shared_ptr<const IVehicleHardware::GetValuesCallback> mResultCallback;
-    std::shared_ptr<const IVehicleHardware::PropertyChangeCallback> mPropertyChangeCallback;
-
-    static void onGetValueResults(
-            const void* clientId, CallbackType callback,
-            std::shared_ptr<PendingRequestPool> requestPool,
-            std::vector<aidl::android::hardware::automotive::vehicle::GetValueResult> results);
+    // Marshals the set property error events into largeParcelable and sends it through
+    // {@code onPropertySetError} callback.
+    static void sendPropertySetErrors(
+            CallbackType callback,
+            std::vector<aidl::android::hardware::automotive::vehicle::VehiclePropError>&&
+                    vehiclePropErrors);
 };
 
 }  // namespace vehicle

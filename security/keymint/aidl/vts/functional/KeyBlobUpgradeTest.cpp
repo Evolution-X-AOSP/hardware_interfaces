@@ -36,11 +36,14 @@
 //
 //      adb push keymint-blobs /data/local/tmp/keymint-blobs
 //
-// 5) Run the "*After*" subset of these tests with the `--keyblob_dir <dir>` command-line argument
-//    pointing to the directory with the keyblobs:
+// 5) Run the "*After*" subset of these tests, with the following command-line arguments
+//    `--keyblob_dir <dir>`: pointing to the directory with the keyblobs.
+//    `--expect_upgrade {yes|no}` (Optional): To specify if users expect an upgrade on the keyBlobs,
+//                                            will be "yes" by default.
 //
 //      VtsAidlKeyMintTargetTest --gtest_filter="*KeyBlobUpgradeTest*After*" \
-//                               --keyblob_dir /data/local/tmp/keymint-blobs
+//                               --keyblob_dir /data/local/tmp/keymint-blobs \
+//                               --expect_upgrade {yes|no}
 //
 //    (Note that this skips the `CreateKeyBlobs` test, which would otherwise replace the saved
 //    keyblobs with freshly generated ones.).
@@ -71,6 +74,9 @@ namespace aidl::android::hardware::security::keymint::test {
 
 namespace {
 
+// Names for individual key types to create and use.  Note that some the names
+// induce specific behaviour, as indicated by the functions below.
+
 std::vector<std::string> keyblob_names_tee = {
         "aes-key",        "aes-key-rr",      "des-key",           "hmac-key",
         "rsa-key",        "p256-key",        "ed25519-key",       "x25519-key",
@@ -83,6 +89,11 @@ std::vector<std::string> keyblob_names_tee_no_25519 = {
 std::vector<std::string> keyblob_names_sb = {"aes-key",        "aes-key-rr",     "des-key",
                                              "hmac-key",       "rsa-key",        "p256-key",
                                              "rsa-attest-key", "p256-attest-key"};
+
+// Helper functions to detect particular key types based on the name.
+bool requires_attest_key(const std::string& name) {
+    return name.find("-attest-key") != std::string::npos;
+}
 
 bool requires_rr(const std::string& name) {
     return name.find("-rr") != std::string::npos;
@@ -207,6 +218,11 @@ class KeyBlobUpgradeTest : public KeyMintAidlTestBase {
         }
 
         for (std::string name : keyblob_names()) {
+            if (requires_attest_key(name) && shouldSkipAttestKeyTest()) {
+                std::cerr << "Skipping variant '" << name
+                          << "' which requires ATTEST_KEY support that has been waivered\n";
+                continue;
+            }
             for (bool with_hidden : {false, true}) {
                 std::string app_id;
                 std::string app_data;
@@ -355,6 +371,11 @@ TEST_P(KeyBlobUpgradeTest, CreateKeyBlobsBefore) {
             }};
 
     for (std::string name : keyblob_names()) {
+        if (requires_attest_key(name) && shouldSkipAttestKeyTest()) {
+            std::cerr << "Skipping variant '" << name
+                      << "' which requires ATTEST_KEY support that has been waivered\n";
+            continue;
+        }
         auto entry = keys_info.find(name);
         ASSERT_NE(entry, keys_info.end()) << "no builder for " << name;
         auto builder = entry->second;
@@ -408,12 +429,18 @@ TEST_P(KeyBlobUpgradeTest, UpgradeKeyBlobsBefore) {
 //
 //     VtsAidlKeyMintTargetTest --gtest_filter="*KeyBlobUpgradeTest.UpgradeKeyBlobsAfter*" \
 //                              --keyblob_dir /data/local/tmp/keymint-blobs
+//                              --expect_upgrade {yes|no}
 //
 // - this replaces the keyblob contents in that directory; if needed, save the upgraded keyblobs
 //   with:
 //      adb pull /data/local/tmp/keymint-blobs/
 TEST_P(KeyBlobUpgradeTest, UpgradeKeyBlobsAfter) {
-    UpgradeKeyBlobs(/* expectUpgrade= */ true);
+    bool expectUpgrade = true;  // this test expects upgrade to happen by default
+    if (expect_upgrade.has_value() && expect_upgrade == false) {
+        std::cout << "Not expecting key upgrade due to --expect_upgrade no\n";
+        expectUpgrade = false;
+    }
+    UpgradeKeyBlobs(expectUpgrade);
 }
 
 // To run this test:
@@ -432,6 +459,11 @@ TEST_P(KeyBlobUpgradeTest, UseKeyBlobsBeforeOrAfter) {
     }
 
     for (std::string name : keyblob_names()) {
+        if (requires_attest_key(name) && shouldSkipAttestKeyTest()) {
+            std::cerr << "Skipping variant '" << name
+                      << "' which requires ATTEST_KEY support that has been waivered\n";
+            continue;
+        }
         for (bool with_hidden : {false, true}) {
             auto builder = AuthorizationSetBuilder();
             if (with_hidden) {
@@ -531,7 +563,7 @@ TEST_P(KeyBlobUpgradeTest, UseKeyBlobsBeforeOrAfter) {
 
                 // Both ways round should agree.
                 EXPECT_EQ(keymint_data, local_data);
-            } else if (name.find("-attest-key") != std::string::npos) {
+            } else if (requires_attest_key(name)) {
                 // Covers rsa-attest-key, p256-attest-key, ed25519-attest-key.
 
                 // Use attestation key to sign RSA signing key
@@ -551,7 +583,7 @@ TEST_P(KeyBlobUpgradeTest, UseKeyBlobsBeforeOrAfter) {
                                               .SetDefaultValidity(),
                                       attest_key, &attested_key_blob, &attested_key_characteristics,
                                       &attested_key_cert_chain));
-                CheckedDeleteKey(&attested_key_blob);
+                KeyBlobDeleter(keymint_, attested_key_blob);
             } else {
                 FAIL() << "Unexpected name: " << name;
             }

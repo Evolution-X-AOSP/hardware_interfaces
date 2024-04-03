@@ -29,6 +29,7 @@ using aidl::android::hardware::audio::effect::getEffectTypeUuidAutomaticGainCont
 using aidl::android::hardware::audio::effect::IEffect;
 using aidl::android::hardware::audio::effect::IFactory;
 using aidl::android::hardware::audio::effect::Parameter;
+using android::hardware::audio::common::testing::detail::TestExecutionTracer;
 
 enum ParamName {
     PARAM_INSTANCE_NAME,
@@ -183,9 +184,7 @@ INSTANTIATE_TEST_SUITE_P(
             std::string margin =
                     std::to_string(static_cast<int>(std::get<PARAM_SATURATION_MARGIN>(info.param)));
 
-            std::string name = "Implementor_" + descriptor.common.implementor + "_name_" +
-                               descriptor.common.name + "_UUID_" +
-                               descriptor.common.id.uuid.toString() + "_digital_gain_" + gain +
+            std::string name = getPrefix(descriptor) + "_digital_gain_" + gain +
                                "_level_estimator_" + estimator + "_margin_" + margin;
             std::replace_if(
                     name.begin(), name.end(), [](const char c) { return !std::isalnum(c); }, '_');
@@ -196,6 +195,7 @@ GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(AGC2ParamTest);
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
+    ::testing::UnitTest::GetInstance()->listeners().Append(new TestExecutionTracer());
     ABinderProcess_setThreadPoolMaxThreadCount(1);
     ABinderProcess_startThreadPool();
     return RUN_ALL_TESTS();

@@ -27,11 +27,11 @@ using namespace ::android::fingerprint::virt;
 
 namespace aidl::android::hardware::biometrics::fingerprint {
 
-SensorLocation FakeFingerprintEngineSide::defaultSensorLocation() {
-    SensorLocation location;
+FakeFingerprintEngineSide::FakeFingerprintEngineSide() : FakeFingerprintEngine() {}
 
-    return {0 /* displayId (not used) */, defaultSensorLocationX /* sensorLocationX */,
-            defaultSensorLocationY /* sensorLocationY */, defaultSensorRadius /* sensorRadius */,
-            "" /* display */};
+SensorLocation FakeFingerprintEngineSide::defaultSensorLocation() {
+    return SensorLocation{.sensorLocationX = defaultSensorLocationX,
+                          .sensorLocationY = defaultSensorLocationY,
+                          .sensorRadius = defaultSensorRadius};
 }
 }  // namespace aidl::android::hardware::biometrics::fingerprint

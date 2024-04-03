@@ -71,10 +71,16 @@ const uint32_t kInvalidPatchlevel = 99998877;
 // additional overhead, for the digest algorithmIdentifier required by PKCS#1.
 const size_t kPkcs1UndigestedSignaturePaddingOverhead = 11;
 
+size_t count_tag_invalid_entries(const std::vector<KeyParameter>& authorizations) {
+    return std::count_if(authorizations.begin(), authorizations.end(),
+                         [](const KeyParameter& e) -> bool { return e.tag == Tag::INVALID; });
+}
+
 typedef KeyMintAidlTestBase::KeyData KeyData;
 // Predicate for testing basic characteristics validity in generation or import.
 bool KeyCharacteristicsBasicallyValid(SecurityLevel secLevel,
-                                      const vector<KeyCharacteristics>& key_characteristics) {
+                                      const vector<KeyCharacteristics>& key_characteristics,
+                                      int32_t aidl_version) {
     if (key_characteristics.empty()) return false;
 
     std::unordered_set<SecurityLevel> levels_seen;
@@ -82,6 +88,13 @@ bool KeyCharacteristicsBasicallyValid(SecurityLevel secLevel,
         if (entry.authorizations.empty()) {
             GTEST_LOG_(ERROR) << "empty authorizations for " << entry.securityLevel;
             return false;
+        }
+
+        // There was no test to assert that INVALID tag should not present in authorization list
+        // before Keymint V3, so there are some Keymint implementations where asserting for INVALID
+        // tag fails(b/297306437), hence skipping for Keymint < 3.
+        if (aidl_version >= 3) {
+            EXPECT_EQ(count_tag_invalid_entries(entry.authorizations), 0);
         }
 
         // Just ignore the SecurityLevel::KEYSTORE as the KM won't do any enforcement on this.
@@ -174,6 +187,18 @@ string x509NameToStr(X509_NAME* name) {
 bool KeyMintAidlTestBase::arm_deleteAllKeys = false;
 bool KeyMintAidlTestBase::dump_Attestations = false;
 std::string KeyMintAidlTestBase::keyblob_dir;
+std::optional<bool> KeyMintAidlTestBase::expect_upgrade = std::nullopt;
+
+KeyBlobDeleter::~KeyBlobDeleter() {
+    if (key_blob_.empty()) {
+        return;
+    }
+    Status result = keymint_->deleteKey(key_blob_);
+    key_blob_.clear();
+    EXPECT_TRUE(result.isOk()) << result.getServiceSpecificError() << "\n";
+    ErrorCode rc = GetReturnErrorCode(result);
+    EXPECT_TRUE(rc == ErrorCode::OK || rc == ErrorCode::UNIMPLEMENTED) << result << "\n";
+}
 
 uint32_t KeyMintAidlTestBase::boot_patch_level(
         const vector<KeyCharacteristics>& key_characteristics) {
@@ -228,16 +253,6 @@ bool KeyMintAidlTestBase::Curve25519Supported() {
     return version >= 2;
 }
 
-ErrorCode KeyMintAidlTestBase::GetReturnErrorCode(const Status& result) {
-    if (result.isOk()) return ErrorCode::OK;
-
-    if (result.getExceptionCode() == EX_SERVICE_SPECIFIC) {
-        return static_cast<ErrorCode>(result.getServiceSpecificError());
-    }
-
-    return ErrorCode::UNKNOWN_ERROR;
-}
-
 void KeyMintAidlTestBase::InitializeKeyMint(std::shared_ptr<IKeyMintDevice> keyMint) {
     ASSERT_NE(keyMint, nullptr);
     keymint_ = std::move(keyMint);
@@ -255,7 +270,7 @@ void KeyMintAidlTestBase::InitializeKeyMint(std::shared_ptr<IKeyMintDevice> keyM
     vendor_patch_level_ = getVendorPatchlevel();
 }
 
-int32_t KeyMintAidlTestBase::AidlVersion() {
+int32_t KeyMintAidlTestBase::AidlVersion() const {
     int32_t version = 0;
     auto status = keymint_->getInterfaceVersion(&version);
     if (!status.isOk()) {
@@ -285,8 +300,8 @@ ErrorCode KeyMintAidlTestBase::GenerateKey(const AuthorizationSet& key_desc,
     KeyCreationResult creationResult;
     Status result = keymint_->generateKey(key_desc.vector_data(), attest_key, &creationResult);
     if (result.isOk()) {
-        EXPECT_PRED2(KeyCharacteristicsBasicallyValid, SecLevel(),
-                     creationResult.keyCharacteristics);
+        EXPECT_PRED3(KeyCharacteristicsBasicallyValid, SecLevel(),
+                     creationResult.keyCharacteristics, AidlVersion());
         EXPECT_GT(creationResult.keyBlob.size(), 0);
         *key_blob = std::move(creationResult.keyBlob);
         *key_characteristics = std::move(creationResult.keyCharacteristics);
@@ -358,8 +373,8 @@ ErrorCode KeyMintAidlTestBase::ImportKey(const AuthorizationSet& key_desc, KeyFo
                                  {} /* attestationSigningKeyBlob */, &creationResult);
 
     if (result.isOk()) {
-        EXPECT_PRED2(KeyCharacteristicsBasicallyValid, SecLevel(),
-                     creationResult.keyCharacteristics);
+        EXPECT_PRED3(KeyCharacteristicsBasicallyValid, SecLevel(),
+                     creationResult.keyCharacteristics, AidlVersion());
         EXPECT_GT(creationResult.keyBlob.size(), 0);
 
         *key_blob = std::move(creationResult.keyBlob);
@@ -402,8 +417,8 @@ ErrorCode KeyMintAidlTestBase::ImportWrappedKey(string wrapped_key, string wrapp
             unwrapping_params.vector_data(), password_sid, biometric_sid, &creationResult);
 
     if (result.isOk()) {
-        EXPECT_PRED2(KeyCharacteristicsBasicallyValid, SecLevel(),
-                     creationResult.keyCharacteristics);
+        EXPECT_PRED3(KeyCharacteristicsBasicallyValid, SecLevel(),
+                     creationResult.keyCharacteristics, AidlVersion());
         EXPECT_GT(creationResult.keyBlob.size(), 0);
 
         key_blob_ = std::move(creationResult.keyBlob);
@@ -512,13 +527,9 @@ ErrorCode KeyMintAidlTestBase::DestroyAttestationIds() {
     return GetReturnErrorCode(result);
 }
 
-void KeyMintAidlTestBase::CheckedDeleteKey(vector<uint8_t>* key_blob, bool keep_key_blob) {
-    ErrorCode result = DeleteKey(key_blob, keep_key_blob);
-    EXPECT_TRUE(result == ErrorCode::OK || result == ErrorCode::UNIMPLEMENTED) << result << endl;
-}
-
 void KeyMintAidlTestBase::CheckedDeleteKey() {
-    CheckedDeleteKey(&key_blob_);
+    ErrorCode result = DeleteKey(&key_blob_, /* keep_key_blob = */ false);
+    EXPECT_TRUE(result == ErrorCode::OK || result == ErrorCode::UNIMPLEMENTED) << result << endl;
 }
 
 ErrorCode KeyMintAidlTestBase::Begin(KeyPurpose purpose, const vector<uint8_t>& key_blob,
@@ -836,7 +847,7 @@ void KeyMintAidlTestBase::CheckEncryptOneByteAtATime(BlockMode block_mode, const
         int vendor_api_level = property_get_int32("ro.vendor.api_level", 0);
         if (SecLevel() == SecurityLevel::STRONGBOX) {
             // This is known to be broken on older vendor implementations.
-            if (vendor_api_level < __ANDROID_API_T__) {
+            if (vendor_api_level <= __ANDROID_API_U__) {
                 compare_output = false;
             } else {
                 additional_information = " (b/194134359) ";
@@ -1295,15 +1306,12 @@ std::pair<ErrorCode, vector<uint8_t>> KeyMintAidlTestBase::UpgradeKey(
 }
 
 bool KeyMintAidlTestBase::IsRkpSupportRequired() const {
-    if (get_vsr_api_level() >= __ANDROID_API_T__) {
-        return true;
-    }
-
-    if (get_vsr_api_level() >= __ANDROID_API_S__) {
-        return SecLevel() != SecurityLevel::STRONGBOX;
-    }
-
-    return false;
+    // This is technically not a match to the requirements for S chipsets,
+    // however when S shipped there was a bug in the test that skipped the
+    // tests if KeyMint 2 was not on the system. So we allowed many chipests
+    // to ship without RKP support. In T we hardened the requirements around
+    // support for RKP, so relax the test to match.
+    return get_vsr_api_level() >= __ANDROID_API_T__;
 }
 
 vector<uint32_t> KeyMintAidlTestBase::ValidKeySizes(Algorithm algorithm) {
@@ -1605,7 +1613,8 @@ bool KeyMintAidlTestBase::is_chipset_allowed_km4_strongbox(void) const {
     auto res = property_get("ro.vendor.qti.soc_model", buffer.data(), nullptr);
     if (res <= 0) return false;
 
-    const string allowed_soc_models[] = {"SM8450", "SM8475", "SM8550", "SXR2230P"};
+    const string allowed_soc_models[] = {"SM8450", "SM8475", "SM8550", "SXR2230P",
+                                         "SM4450", "SM7450", "SM6450"};
 
     for (const string model : allowed_soc_models) {
         if (model.compare(buffer.data()) == 0) {
@@ -1617,17 +1626,39 @@ bool KeyMintAidlTestBase::is_chipset_allowed_km4_strongbox(void) const {
     return false;
 }
 
-// Skip the test if all the following conditions hold:
-// 1. ATTEST_KEY feature is disabled
-// 2. STRONGBOX is enabled
-// 3. The device is running one of the chipsets that have received a waiver
-//     allowing it to be launched with Android S (or later) with Keymaster 4.0
+// Indicate whether a test that involves use of the ATTEST_KEY feature should be
+// skipped.
+//
+// In general, every KeyMint implementation should support ATTEST_KEY;
+// however, there is a waiver for some specific devices that ship with a
+// combination of Keymaster/StrongBox and KeyMint/TEE.  On these devices, the
+// ATTEST_KEY feature is disabled in the KeyMint/TEE implementation so that
+// the device has consistent ATTEST_KEY behavior (ie. UNIMPLEMENTED) across both
+// HAL implementations.
+//
+// This means that a test involving ATTEST_KEY test should be skipped if all of
+// the following conditions hold:
+// 1. The device is running one of the chipsets that have received a waiver
+//     allowing it to be launched with Android S or T with Keymaster 4.0
 //     in StrongBox
-void KeyMintAidlTestBase::skipAttestKeyTest(void) const {
+// 2. The device has a STRONGBOX implementation present.
+// 3. ATTEST_KEY feature is advertised as disabled.
+//
+// Note that in this scenario, ATTEST_KEY tests should be skipped for both
+// the StrongBox implementation (which is Keymaster, therefore not tested here)
+// and for the TEE implementation (which is adjusted to return UNIMPLEMENTED
+// specifically for this waiver).
+bool KeyMintAidlTestBase::shouldSkipAttestKeyTest(void) const {
     // Check the chipset first as that doesn't require a round-trip to Package Manager.
-    if (is_chipset_allowed_km4_strongbox() && is_strongbox_enabled() &&
-        is_attest_key_feature_disabled()) {
-        GTEST_SKIP() << "Test is not applicable";
+    return (is_chipset_allowed_km4_strongbox() && is_strongbox_enabled() &&
+            is_attest_key_feature_disabled());
+}
+
+// Skip a test that involves use of the ATTEST_KEY feature in specific configurations
+// where ATTEST_KEY is not supported (for either StrongBox or TEE).
+void KeyMintAidlTestBase::skipAttestKeyTest(void) const {
+    if (shouldSkipAttestKeyTest()) {
+        GTEST_SKIP() << "Test using ATTEST_KEY is not applicable on waivered device";
     }
 }
 
@@ -1761,6 +1792,12 @@ void verify_root_of_trust(const vector<uint8_t>& verified_boot_key, bool device_
     std::string empty_boot_key(32, '\0');
     std::string verified_boot_key_str((const char*)verified_boot_key.data(),
                                       verified_boot_key.size());
+    if (get_vsr_api_level() >= __ANDROID_API_V__) {
+        // The attestation should contain the SHA-256 hash of the verified boot
+        // key.  However, this was not checked for earlier versions of the KeyMint
+        // HAL so only be strict for VSR-V and above.
+        EXPECT_LE(verified_boot_key.size(), 32);
+    }
     EXPECT_NE(property_get("ro.boot.verifiedbootstate", property_value, ""), 0);
     if (!strcmp(property_value, "green")) {
         EXPECT_EQ(verified_boot_state, VerifiedBoot::VERIFIED);
@@ -1984,6 +2021,16 @@ AssertionResult ChainSignaturesAreValid(const vector<Certificate>& chain,
     return AssertionSuccess();
 }
 
+ErrorCode GetReturnErrorCode(const Status& result) {
+    if (result.isOk()) return ErrorCode::OK;
+
+    if (result.getExceptionCode() == EX_SERVICE_SPECIFIC) {
+        return static_cast<ErrorCode>(result.getServiceSpecificError());
+    }
+
+    return ErrorCode::UNKNOWN_ERROR;
+}
+
 X509_Ptr parse_cert_blob(const vector<uint8_t>& blob) {
     const uint8_t* p = blob.data();
     return X509_Ptr(d2i_X509(nullptr /* allocate new */, &p, blob.size()));
@@ -2031,6 +2078,36 @@ vector<uint8_t> make_name_from_str(const string& name) {
     i2d_X509_NAME(x509_name.get(), &p);
 
     return retval;
+}
+
+void KeyMintAidlTestBase::assert_mgf_digests_present_or_not_in_key_characteristics(
+        std::vector<android::hardware::security::keymint::Digest>& expected_mgf_digests,
+        bool is_mgf_digest_expected) const {
+    assert_mgf_digests_present_or_not_in_key_characteristics(
+            key_characteristics_, expected_mgf_digests, is_mgf_digest_expected);
+}
+
+void KeyMintAidlTestBase::assert_mgf_digests_present_or_not_in_key_characteristics(
+        const vector<KeyCharacteristics>& key_characteristics,
+        std::vector<android::hardware::security::keymint::Digest>& expected_mgf_digests,
+        bool is_mgf_digest_expected) const {
+    // There was no test to assert that MGF1 digest was present in generated/imported key
+    // characteristics before Keymint V3, so there are some Keymint implementations where
+    // asserting for MGF1 digest fails(b/297306437), hence skipping for Keymint < 3.
+    if (AidlVersion() < 3) {
+        return;
+    }
+    AuthorizationSet auths;
+    for (auto& entry : key_characteristics) {
+        auths.push_back(AuthorizationSet(entry.authorizations));
+    }
+    for (auto digest : expected_mgf_digests) {
+        if (is_mgf_digest_expected) {
+            ASSERT_TRUE(auths.Contains(TAG_RSA_OAEP_MGF_DIGEST, digest));
+        } else {
+            ASSERT_FALSE(auths.Contains(TAG_RSA_OAEP_MGF_DIGEST, digest));
+        }
+    }
 }
 
 namespace {
@@ -2153,13 +2230,27 @@ void p256_pub_key(const vector<uint8_t>& coseKeyData, EVP_PKEY_Ptr* signingKey) 
     *signingKey = std::move(pubKey);
 }
 
-void device_id_attestation_vsr_check(const ErrorCode& result) {
-    if (get_vsr_api_level() > __ANDROID_API_T__) {
-        ASSERT_FALSE(result == ErrorCode::INVALID_TAG)
+// Check the error code from an attempt to perform device ID attestation with an invalid value.
+void device_id_attestation_check_acceptable_error(Tag tag, const ErrorCode& result) {
+    if (result == ErrorCode::CANNOT_ATTEST_IDS) {
+        // Standard/default error code for ID mismatch.
+    } else if (result == ErrorCode::INVALID_TAG) {
+        // Depending on the situation, other error codes may be acceptable.  First, allow older
+        // implementations to use INVALID_TAG.
+        ASSERT_FALSE(get_vsr_api_level() > __ANDROID_API_T__)
                 << "It is a specification violation for INVALID_TAG to be returned due to ID "
                 << "mismatch in a Device ID Attestation call. INVALID_TAG is only intended to "
                 << "be used for a case where updateAad() is called after update(). As of "
                 << "VSR-14, this is now enforced as an error.";
+    } else if (result == ErrorCode::ATTESTATION_IDS_NOT_PROVISIONED) {
+        // If the device is not a phone, it will not have IMEI/MEID values available.  Allow
+        // ATTESTATION_IDS_NOT_PROVISIONED in this case.
+        ASSERT_TRUE((tag == TAG_ATTESTATION_ID_IMEI || tag == TAG_ATTESTATION_ID_MEID ||
+                     tag == TAG_ATTESTATION_ID_SECOND_IMEI))
+                << "incorrect error code on attestation ID mismatch";
+    } else {
+        ADD_FAILURE() << "Error code " << result
+                      << " returned on attestation ID mismatch, should be CANNOT_ATTEST_IDS";
     }
 }
 
